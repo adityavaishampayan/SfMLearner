@@ -111,9 +111,31 @@ class DataLoader(object):
             cy = intrinsics[:,1,2] - tf.cast(offset_y, dtype=tf.float32)
             intrinsics = self.make_intrinsics_matrix(fx, fy, cx, cy)
             return im, intrinsics
+################################################################################################
+        # Random coloring
+        def random_coloring(im):
+            batch_size, in_h, in_w, in_c = im.get_shape().as_list()
+            # randomly shift gamma
+            im_aug  = tf.image.convert_image_dtype(im, tf.float32)  ** tf.random_uniform([], 0.8, 1.2)
+
+            # randomly shift brightness
+            im_aug  *=  tf.random_uniform([], 0.5, 2.0)
+
+            # randomly shift color
+            im_aug  *= tf.stack([tf.ones([batch_size, in_h, in_w]) * (tf.random_uniform([in_c], 0.8, 1.2))[i] for i in range(in_c)], axis=3)
+
+            # saturate
+            im_aug  = tf.clip_by_value(im_aug,  0, 1)
+
+            im_aug = tf.image.convert_image_dtype(im_aug, tf.uint8)
+
+            return im_aug
+###############################################################################################
         im, intrinsics = random_scaling(im, intrinsics)
         im, intrinsics = random_cropping(im, intrinsics, out_h, out_w)
         im = tf.cast(im, dtype=tf.uint8)
+	do_augment  = tf.random_uniform([], 0, 1)
+        im = tf.cond(do_augment > 0.5, lambda: random_coloring(im), lambda: im)
         return im, intrinsics
 
     def format_file_list(self, data_root, split):

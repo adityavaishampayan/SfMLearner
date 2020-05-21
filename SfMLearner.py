@@ -10,9 +10,24 @@ from nets import *
 from utils import *
 
 class SfMLearner(object):
+    # lr = 0.02
     def __init__(self):
         pass
     
+    def var_lr(self,ct_stp,lr,step_inc):
+        if(ct_stp%step_inc == 0):
+            lr *= 0.8
+        return lr
+
+    # input: target image, projected image.
+    def s_s_i_m(self, x, y): 
+        sigma_x  = slim.avg_pool2d(x ** 2, 3, 1, 'SAME') - slim.avg_pool2d(x, 3, 1, 'SAME') ** 2
+        sigma_y  = slim.avg_pool2d(y ** 2, 3, 1, 'SAME') - slim.avg_pool2d(y, 3, 1, 'SAME') ** 2
+        sigma_xy = slim.avg_pool2d(x * y , 3, 1, 'SAME') - slim.avg_pool2d(x, 3, 1, 'SAME') * slim.avg_pool2d(y, 3, 1, 'SAME')
+        tmp = tf.clip_by_value((1 - (2 * slim.avg_pool2d(x, 3, 1, 'SAME') * slim.avg_pool2d(y, 3, 1, 'SAME') + 0.01 ** 2) * (2 * sigma_xy + 0.03 ** 2) / (slim.avg_pool2d(x, 3, 1, 'SAME') ** 2 + slim.avg_pool2d(y, 3, 1, 'SAME') ** 2 + 0.01 ** 2) * (sigma_x + sigma_y + 0.03 ** 2)) / 2, 0, 1)
+        reduced = tf.reduce_mean(tmp)
+        return reduced
+
     def build_train_graph(self):
         opt = self.opt
         loader = DataLoader(opt.dataset_dir,
@@ -42,6 +57,7 @@ class SfMLearner(object):
             pixel_loss = 0
             exp_loss = 0
             smooth_loss = 0
+            ssim_loss = 0
             tgt_image_all = []
             src_image_stack_all = []
             proj_image_stack_all = []
@@ -81,6 +97,9 @@ class SfMLearner(object):
                             self.compute_exp_reg_loss(curr_exp_logits,
                                                       ref_exp_mask)
                         curr_exp = tf.nn.softmax(curr_exp_logits)
+
+                    assert curr_proj_image.shape == curr_tgt_image.shape
+                    ssim_loss += opt.ssim_weight * self.s_s_i_m(curr_proj_image, curr_tgt_image)
                     # Photo-consistency loss weighted by explainability
                     if opt.explain_reg_weight > 0:
                         pixel_loss += tf.reduce_mean(curr_proj_error * \
@@ -107,11 +126,11 @@ class SfMLearner(object):
                 proj_error_stack_all.append(proj_error_stack)
                 if opt.explain_reg_weight > 0:
                     exp_mask_stack_all.append(exp_mask_stack)
-            total_loss = pixel_loss + smooth_loss + exp_loss
+            total_loss = pixel_loss + smooth_loss + exp_loss + ssim_loss
 
         with tf.name_scope("train_op"):
             train_vars = [var for var in tf.trainable_variables()]
-            optim = tf.train.AdamOptimizer(opt.learning_rate, opt.beta1)
+            optim = tf.train.AdamOptimizer(opt.lr, opt.beta1)
             # self.grads_and_vars = optim.compute_gradients(total_loss, 
             #                                               var_list=train_vars)
             # self.train_op = optim.apply_gradients(self.grads_and_vars)
@@ -128,6 +147,7 @@ class SfMLearner(object):
         self.steps_per_epoch = loader.steps_per_epoch
         self.total_loss = total_loss
         self.pixel_loss = pixel_loss
+	self.ssim_loss = ssim_loss
         self.exp_loss = exp_loss
         self.smooth_loss = smooth_loss
         self.tgt_image_all = tgt_image_all
@@ -171,6 +191,7 @@ class SfMLearner(object):
         tf.summary.scalar("total_loss", self.total_loss)
         tf.summary.scalar("pixel_loss", self.pixel_loss)
         tf.summary.scalar("smooth_loss", self.smooth_loss)
+	tf.summary.scalar("ssim_loss", self.ssim_loss)
         tf.summary.scalar("exp_loss", self.exp_loss)
         for s in range(opt.num_scales):
             tf.summary.histogram("scale%d_depth" % s, self.pred_depth[s])
@@ -237,6 +258,7 @@ class SfMLearner(object):
                     "global_step": self.global_step,
                     "incr_global_step": self.incr_global_step
                 }
+                opt.lr = self.var_lr(step, opt.lr,opt.step_lr)
 
                 if step % opt.summary_freq == 0:
                     fetches["loss"] = self.total_loss
